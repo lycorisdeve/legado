@@ -1,8 +1,8 @@
-name: Sync Releases
+name: Sync Gedoor Legado Releases
 
 on:
   schedule:
-    - cron: '0 3 * * *'   # 每天凌晨3点执行
+    - cron: '0 3 * * *'  # 每天凌晨3点同步
   workflow_dispatch:
 
 env:
@@ -23,22 +23,20 @@ jobs:
       - name: Find new releases
         id: find_new
         run: |
-          set +e
           cut -f1 -d$'\t' upstream.txt | sort > upstream_tags.txt
           cut -f1 -d$'\t' my.txt | sort > my_tags.txt
           comm -23 upstream_tags.txt my_tags.txt | grep -vE '^\s*$|^-$' > new_releases.txt
           echo "new_releases=$(paste -sd ',' new_releases.txt)" >> $GITHUB_OUTPUT
           echo "New releases to sync:"
           cat new_releases.txt || echo "(none)"
-          set -e
 
       - name: Sync new releases
         if: steps.find_new.outputs.new_releases != ''
         run: |
           while IFS= read -r tag; do
             echo "Sync release: [$tag]"
-            # 带引号防止标签名中有特殊字符解析错误
-            if ! release_json=$(gh release view --repo gedoor/legado --json name,body,isDraft,isPrerelease --tag "$tag"); then
+
+            if ! release_json=$(gh release view "$tag" --repo gedoor/legado --json name,body,isDraft,isPrerelease); then
               echo "⚠️ Release $tag 不存在或访问失败，跳过"
               continue
             fi
@@ -49,12 +47,12 @@ jobs:
             prerelease=$(echo "$release_json" | jq -r '.isPrerelease')
 
             mkdir -p downloads
-            gh release download --repo gedoor/legado --dir downloads --pattern "*" --tag "$tag" || echo "No assets"
+            gh release download "$tag" --repo gedoor/legado --dir downloads || echo "No assets"
 
             if [ "$(ls -A downloads)" ]; then
-              gh release create "$tag" downloads/* --title "$name" --notes "$body" $( [ "$draft" == "true" ] && echo "--draft" ) $( [ "$prerelease" == "true" ] && echo "--prerelease" )
+              gh release create "$tag" downloads/* --title "$name" --notes "$body" $( [ "$draft" = "true" ] && echo "--draft" ) $( [ "$prerelease" = "true" ] && echo "--prerelease" )
             else
-              gh release create "$tag" --title "$name" --notes "$body" $( [ "$draft" == "true" ] && echo "--draft" ) $( [ "$prerelease" == "true" ] && echo "--prerelease" )
+              gh release create "$tag" --title "$name" --notes "$body" $( [ "$draft" = "true" ] && echo "--draft" ) $( [ "$prerelease" = "true" ] && echo "--prerelease" )
             fi
 
             rm -rf downloads
