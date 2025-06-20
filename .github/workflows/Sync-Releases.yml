@@ -1,68 +1,56 @@
-name: Sync Releases from gedoor/legado
+name: Sync Upstream Releases
+
+permissions:
+  contents: write
 
 on:
   schedule:
-    - cron: '0 3 * * *'  # 每天凌晨3点自动同步
-  workflow_dispatch:       # 支持手动触发
+    - cron: '0 3 * * *'  # 每天 UTC+0 3:00 执行（北京时间 11:00）
 
-env:
-  GH_TOKEN: ${{ secrets.GH_TOKEN }}
+  workflow_dispatch:  # 支持手动触发
 
 jobs:
   sync-releases:
+    name: Sync releases from gedoor/legado
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout this repo
+      - name: Checkout your fork
         uses: actions/checkout@v3
 
-      - name: List upstream (gedoor/legado) and current repo releases
+      - name: Install GitHub CLI
+        uses: cli/cli-action@v2
+
+      - name: Configure GitHub CLI
+        run: gh auth setup-git
+
+      - name: List upstream releases
         run: |
-          gh release list --repo gedoor/legado --limit 1000 > upstream.txt
-          gh release list --limit 1000 > my.txt
+          gh release list --repo gedoor/legado
 
-      - name: Find new releases
-        id: find_new
+      - name: Sync releases
+        uses: wei/git-sync@v3
+        with:
+          source_repo: "gedoor/legado"
+          source_branch: "master"
+          destination_branch: "master"
+          ssh: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Mirror releases manually
         run: |
-          set +e
-          cut -f1 -d$'\t' upstream.txt | sort > upstream_tags.txt
-          cut -f1 -d$'\t' my.txt | sort > my_tags.txt
-          comm -23 upstream_tags.txt my_tags.txt | grep -vE '^\s*$|^-$' > new_releases.txt
-          echo "new_releases=$(paste -sd ',' new_releases.txt)" >> $GITHUB_OUTPUT
-          echo "New releases to sync:"
-          cat new_releases.txt || echo "(none)"
-          set -e
+          gh repo clone gedoor/legado legado-upstream
+          cd legado-upstream
 
-      - name: Sync new releases from upstream
-        if: steps.find_new.outputs.new_releases != ''
-        run: |
-          for tag in $(cat new_releases.txt); do
-            echo "🔄 Syncing release: $tag"
-            release_json=$(gh release view "$tag" --repo gedoor/legado --json name,body,isDraft,isPrerelease)
-            name=$(echo "$release_json" | jq -r '.name')
-            body=$(echo "$release_json" | jq -r '.body')
-            draft=$(echo "$release_json" | jq -r '.isDraft')
-            prerelease=$(echo "$release_json" | jq -r '.isPrerelease')
-
-            mkdir -p downloads
-            gh release download "$tag" --repo gedoor/legado --dir downloads || echo "No assets found for $tag"
-
-            if [ "$(ls -A downloads)" ]; then
-              gh release create "$tag" downloads/* \
-                --title "$name" \
-                --notes "$body" \
-                $( [ "$draft" == "true" ] && echo "--draft" ) \
-                $( [ "$prerelease" == "true" ] && echo "--prerelease" )
+          for tag in $(git tag); do
+            echo "Checking tag $tag..."
+            if ! gh release view "$tag" &>/dev/null; then
+              echo "Syncing release $tag"
+              gh release download "$tag" -R gedoor/legado -D ../downloads/"$tag"
+              gh release create "$tag" ../downloads/"$tag"/* -t "$tag" -n "Mirror from upstream"
             else
-              gh release create "$tag" \
-                --title "$name" \
-                --notes "$body" \
-                $( [ "$draft" == "true" ] && echo "--draft" ) \
-                $( [ "$prerelease" == "true" ] && echo "--prerelease" )
+              echo "Release $tag already exists in fork"
             fi
-
-            rm -rf downloads
-            echo "✅ Release $tag synced successfully"
           done
-
-      - name: Finish
-        run: echo "✅ All new releases have been synced"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
