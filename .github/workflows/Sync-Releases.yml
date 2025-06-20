@@ -3,7 +3,7 @@ name: Sync Releases
 on:
   schedule:
     - cron: '0 3 * * *'   # 每天凌晨3点执行
-  workflow_dispatch:       # 支持手动触发
+  workflow_dispatch:
 
 env:
   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -35,16 +35,21 @@ jobs:
       - name: Sync new releases
         if: steps.find_new.outputs.new_releases != ''
         run: |
-          for tag in $(cat new_releases.txt); do
-            echo "Sync release $tag"
-            release_json=$(gh release view "$tag" --repo gedoor/legado --json name,body,isDraft,isPrerelease)
+          while IFS= read -r tag; do
+            echo "Sync release: [$tag]"
+            # 带引号防止标签名中有特殊字符解析错误
+            if ! release_json=$(gh release view --repo gedoor/legado --json name,body,isDraft,isPrerelease --tag "$tag"); then
+              echo "⚠️ Release $tag 不存在或访问失败，跳过"
+              continue
+            fi
+
             name=$(echo "$release_json" | jq -r '.name')
             body=$(echo "$release_json" | jq -r '.body')
             draft=$(echo "$release_json" | jq -r '.isDraft')
             prerelease=$(echo "$release_json" | jq -r '.isPrerelease')
 
             mkdir -p downloads
-            gh release download "$tag" --repo gedoor/legado --dir downloads || echo "No assets"
+            gh release download --repo gedoor/legado --dir downloads --pattern "*" --tag "$tag" || echo "No assets"
 
             if [ "$(ls -A downloads)" ]; then
               gh release create "$tag" downloads/* --title "$name" --notes "$body" $( [ "$draft" == "true" ] && echo "--draft" ) $( [ "$prerelease" == "true" ] && echo "--prerelease" )
@@ -54,7 +59,7 @@ jobs:
 
             rm -rf downloads
             echo "Release $tag synced"
-          done
+          done < new_releases.txt
 
       - name: Finish
         run: echo "Releases sync complete"
