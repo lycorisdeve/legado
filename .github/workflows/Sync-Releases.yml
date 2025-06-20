@@ -5,52 +5,80 @@ permissions:
 
 on:
   schedule:
-    - cron: '0 3 * * *'  # 每天 UTC+0 3:00 执行（北京时间 11:00）
+    - cron: '0 3 * * *'  # 每天北京时间 11:00
 
-  workflow_dispatch:  # 支持手动触发
+  workflow_dispatch:
 
 jobs:
   sync-releases:
-    name: Sync releases from gedoor/legado
+    name: Sync full releases from gedoor/legado
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout your fork
         uses: actions/checkout@v3
 
       - name: Install GitHub CLI
-        uses: cli/cli-action@v2
-
-      - name: Configure GitHub CLI
-        run: gh auth setup-git
-
-      - name: List upstream releases
         run: |
-          gh release list --repo gedoor/legado
+          sudo apt update
+          sudo apt install -y gh jq
 
-      - name: Sync releases
-        uses: wei/git-sync@v3
-        with:
-          source_repo: "gedoor/legado"
-          source_branch: "master"
-          destination_branch: "master"
-          ssh: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Authenticate GitHub CLI
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      - name: Mirror releases manually
+      - name: Clone upstream repo
         run: |
           gh repo clone gedoor/legado legado-upstream
-          cd legado-upstream
+          mkdir -p releases_download
 
-          for tag in $(git tag); do
-            echo "Checking tag $tag..."
-            if ! gh release view "$tag" &>/dev/null; then
-              echo "Syncing release $tag"
-              gh release download "$tag" -R gedoor/legado -D ../downloads/"$tag"
-              gh release create "$tag" ../downloads/"$tag"/* -t "$tag" -n "Mirror from upstream"
-            else
-              echo "Release $tag already exists in fork"
+      - name: Sync all upstream releases
+        run: |
+          cd legado-upstream
+          upstream_repo="gedoor/legado"
+          fork_repo="${{ github.repository }}"
+
+          echo "Fetching list of upstream releases..."
+          gh release list -R $upstream_repo | awk '{print $1}' > ../all_tags.txt
+
+          for tag in $(cat ../all_tags.txt); do
+            echo "Checking tag: $tag"
+
+            # 如果 fork 中已经存在该 release，就跳过
+            if gh release view "$tag" -R "$fork_repo" &>/dev/null; then
+              echo "✔ Release $tag already exists in fork."
+              continue
             fi
+
+            echo "⬇ Downloading release metadata for $tag"
+
+            # 获取 release 详情（包括 title、body、是否为 prerelease）
+            release_json=$(gh api repos/$upstream_repo/releases/tags/$tag)
+            title=$(echo "$release_json" | jq -r '.name')
+            body=$(echo "$release_json" | jq -r '.body')
+            prerelease=$(echo "$release_json" | jq -r '.prerelease')
+
+            # 下载所有 asset 文件
+            download_dir="../releases_download/$tag"
+            mkdir -p "$download_dir"
+            gh release download "$tag" -R $upstream_repo -D "$download_dir"
+
+            echo "📦 Creating release $tag in fork..."
+
+            # 判断是否为 prerelease
+            if [ "$prerelease" = "true" ]; then
+              gh release create "$tag" "$download_dir"/* \
+                -R "$fork_repo" \
+                -t "$title" \
+                -n "$body" \
+                --prerelease
+            else
+              gh release create "$tag" "$download_dir"/* \
+                -R "$fork_repo" \
+                -t "$title" \
+                -n "$body"
+            fi
+
+            echo "✅ Synced release $tag"
           done
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
