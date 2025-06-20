@@ -1,47 +1,46 @@
-name: Sync Releases from gedoor/legado
+name: Sync Releases
 
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 2 * * *'  # 每天凌晨2点自动执行一次
+    - cron: '0 0 * * *'  # 每天午夜自动执行一次，可根据需要调整或删除
 
 jobs:
   sync_releases:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GH_TOKEN }}
 
     steps:
-    - name: Checkout this repository
+    - name: Checkout this repo
       uses: actions/checkout@v3
 
-    - name: Install jq
+    - name: Install dependencies
       run: sudo apt-get update && sudo apt-get install -y jq
 
     - name: Fetch upstream release tags
       run: |
-        gh auth setup-git
+        echo "获取 upstream releases 列表"
         gh release list --repo gedoor/legado --limit 1000 > upstream.txt
         cut -f1 -d$'\t' upstream.txt | sort > upstream_tags.txt
 
-    - name: Fetch my fork release tags
+    - name: Fetch current repo release tags
       run: |
+        echo "获取本仓库 releases 列表"
         gh release list --limit 1000 > my.txt
         cut -f1 -d$'\t' my.txt | sort > my_tags.txt
 
-    - name: Find new releases to sync
+    - name: Determine new releases to sync
       run: |
         comm -23 upstream_tags.txt my_tags.txt | grep -vE '^\s*$|^-$' > new_releases.txt
         echo "new_releases=$(paste -sd ',' new_releases.txt)" >> $GITHUB_OUTPUT
-        echo "New releases to sync:"
-        cat new_releases.txt || echo "(none)"
+        echo "新版本标签列表："
+        cat new_releases.txt || echo "(无新版本)"
 
     - name: Sync new releases
-      if: steps.find_new_releases.outputs.new_releases != ''
-      env:
-        GH_TOKEN: ${{ secrets.GH_TOKEN }}
       run: |
-        while IFS= read -r tag || [[ -n "$tag" ]]; do
-          [[ -z "$tag" || "$tag" == "-" ]] && continue
-          echo "Sync release: [$tag]"
+        while IFS= read -r tag; do
+          echo "开始同步 Release: $tag"
 
           if ! release_json=$(gh release view "$tag" --repo gedoor/legado --json name,body,isDraft,isPrerelease); then
             echo "⚠️ Release $tag 不存在或访问失败，跳过"
@@ -53,19 +52,17 @@ jobs:
           draft=$(echo "$release_json" | jq -r '.isDraft')
           prerelease=$(echo "$release_json" | jq -r '.isPrerelease')
 
-          tmp_dir=$(mktemp -d)
-          echo "Downloading assets for $tag ..."
-          if ! gh release download "$tag" --repo gedoor/legado --dir "$tmp_dir" > /dev/null 2>&1; then
-            echo "No assets or download failed"
+          mkdir -p downloads
+          if ! gh release download "$tag" --repo gedoor/legado --dir downloads; then
+            echo "没有资产文件"
           fi
 
-          echo "Creating release $tag in fork..."
-          if [ "$(ls -A "$tmp_dir")" ]; then
-            gh release create "$tag" "$tmp_dir"/* --title "$name" --notes "$body" $( [ "$draft" = "true" ] && echo "--draft" ) $( [ "$prerelease" = "true" ] && echo "--prerelease" )
+          if [ "$(ls -A downloads)" ]; then
+            gh release create "$tag" downloads/* --title "$name" --notes "$body" $( [ "$draft" = "true" ] && echo "--draft" ) $( [ "$prerelease" = "true" ] && echo "--prerelease" )
           else
             gh release create "$tag" --title "$name" --notes "$body" $( [ "$draft" = "true" ] && echo "--draft" ) $( [ "$prerelease" = "true" ] && echo "--prerelease" )
           fi
 
-          rm -rf "$tmp_dir"
-          echo "Release $tag synced"
+          rm -rf downloads
+          echo "Release $tag 同步完成"
         done < new_releases.txt
