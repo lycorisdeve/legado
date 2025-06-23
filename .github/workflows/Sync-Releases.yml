@@ -10,7 +10,7 @@ on:
 
 jobs:
   sync-releases:
-    name: Sync full releases from gedoor/legado
+    name: Sync all releases from gedoor/legado (with pagination)
     runs-on: ubuntu-latest
 
     steps:
@@ -30,25 +30,47 @@ jobs:
           gh repo clone gedoor/legado legado-upstream
           mkdir -p releases_download
 
-      - name: Fetch releases and sync missing ones
+      - name: Sync all upstream releases with pagination
         run: |
           upstream_repo="gedoor/legado"
           fork_repo="${{ github.repository }}"
 
-          echo "Fetching upstream releases..."
-          gh api -H "Accept: application/vnd.github+json" /repos/$upstream_repo/releases > ../upstream_releases.json
-          echo "Fetching fork releases..."
-          gh api -H "Accept: application/vnd.github+json" /repos/$fork_repo/releases > ../fork_releases.json
+          echo "Fetching all upstream releases with pagination..."
+          page=1
+          all_upstream_releases="[]"
+          while :; do
+            releases=$(gh api -H "Accept: application/vnd.github+json" "/repos/$upstream_repo/releases?per_page=100&page=$page")
+            count=$(echo "$releases" | jq length)
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+            all_upstream_releases=$(jq -s 'add' <(echo "$all_upstream_releases") <(echo "$releases"))
+            ((page++))
+          done
+          echo "$all_upstream_releases" > ../upstream_releases.json
+          echo "Fetched all upstream releases."
 
-          # 获取下游已有的release tags，转为空格分隔的字符串
+          echo "Fetching all fork releases with pagination..."
+          page=1
+          all_fork_releases="[]"
+          while :; do
+            releases=$(gh api -H "Accept: application/vnd.github+json" "/repos/$fork_repo/releases?per_page=100&page=$page")
+            count=$(echo "$releases" | jq length)
+            if [ "$count" -eq 0 ]; then
+              break
+            fi
+            all_fork_releases=$(jq -s 'add' <(echo "$all_fork_releases") <(echo "$releases"))
+            ((page++))
+          done
+          echo "$all_fork_releases" > ../fork_releases.json
+          echo "Fetched all fork releases."
+
           existing_tags=$(jq -r '.[].tag_name' ../fork_releases.json | tr '\n' ' ')
-          echo "Downstream already has tags: $existing_tags"
+          echo "Fork already has tags: $existing_tags"
 
-          # 遍历所有上游非draft的release
           jq -c '.[] | select(.draft == false)' ../upstream_releases.json | while read -r release; do
             tag=$(echo "$release" | jq -r '.tag_name')
 
-            # 如果下游已有该tag，则跳过
             if echo "$existing_tags" | grep -qw "$tag"; then
               echo "✔ Release $tag already exists in fork, skipping."
               continue
