@@ -47,7 +47,7 @@ jobs:
             all_upstream_releases=$(jq -s 'add' <(echo "$all_upstream_releases") <(echo "$releases"))
             ((page++))
           done
-          echo "$all_upstream_releases" > ../upstream_releases.json
+          echo "$all_upstream_releases" > upstream_releases.json
           echo "Fetched all upstream releases."
 
           echo "Fetching all fork releases with pagination..."
@@ -62,13 +62,16 @@ jobs:
             all_fork_releases=$(jq -s 'add' <(echo "$all_fork_releases") <(echo "$releases"))
             ((page++))
           done
-          echo "$all_fork_releases" > ../fork_releases.json
+          echo "$all_fork_releases" > fork_releases.json
           echo "Fetched all fork releases."
 
-          existing_tags=$(jq -r '.[].tag_name' ../fork_releases.json | tr '\n' ' ')
+          existing_tags=$(jq -r '.[].tag_name' fork_releases.json | tr '\n' ' ')
           echo "Fork already has tags: $existing_tags"
 
-          jq -c '.[] | select(.draft == false)' ../upstream_releases.json | while read -r release; do
+          echo "Sorting upstream releases by creation date..."
+          sorted_releases=$(jq -s 'add | sort_by(.created_at)' upstream_releases.json)
+
+          echo "$sorted_releases" | jq -c '.[] | select(.draft == false)' | while read -r release; do
             tag=$(echo "$release" | jq -r '.tag_name')
 
             if echo "$existing_tags" | grep -qw "$tag"; then
@@ -80,21 +83,21 @@ jobs:
             body=$(echo "$release" | jq -r '.body // ""')
             prerelease=$(echo "$release" | jq -r '.prerelease')
 
-            download_dir="../releases_download/$tag"
+            download_dir="releases_download/$tag"
             mkdir -p "$download_dir"
 
             echo "⬇ Downloading assets for $tag..."
-            gh release download "$tag" -R $upstream_repo -D "$download_dir"
+            gh release download "$tag" -R "$upstream_repo" -D "$download_dir" || echo "⚠ No assets for $tag."
 
             echo "🚀 Creating release $tag in fork..."
             if [ "$prerelease" = "true" ]; then
-              gh release create "$tag" "$download_dir"/* \
+              gh release create "$tag" $download_dir/* \
                 -R "$fork_repo" \
                 -t "$title" \
                 -n "$body" \
                 --prerelease
             else
-              gh release create "$tag" "$download_dir"/* \
+              gh release create "$tag" $download_dir/* \
                 -R "$fork_repo" \
                 -t "$title" \
                 -n "$body"
