@@ -6,7 +6,6 @@ permissions:
 on:
   schedule:
     - cron: '0 3 * * *'  # 每天北京时间 11:00
-
   workflow_dispatch:
 
 jobs:
@@ -18,53 +17,47 @@ jobs:
       - name: Checkout your fork
         uses: actions/checkout@v3
 
-      - name: Install GitHub CLI
+      - name: Install GitHub CLI & jq
         run: |
           sudo apt update
           sudo apt install -y gh jq
 
       - name: Authenticate GitHub CLI
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
+        run: echo "${{ secrets.GH_TOKEN }}" | gh auth login --with-token
 
-      - name: Clone upstream repo
+      - name: Clone upstream repo and prepare workspace
         run: |
           gh repo clone gedoor/legado legado-upstream
           mkdir -p releases_download
 
-      - name: Sync all upstream releases
+      - name: Sync all upstream releases (excluding drafts)
         run: |
           cd legado-upstream
           upstream_repo="gedoor/legado"
           fork_repo="${{ github.repository }}"
 
           echo "Fetching list of upstream releases..."
-          gh release list -R $upstream_repo | awk '{print $1}' > ../all_tags.txt
+          gh api -H "Accept: application/vnd.github+json" /repos/$upstream_repo/releases > ../releases.json
 
-          for tag in $(cat ../all_tags.txt); do
-            echo "Checking tag: $tag"
+          jq -c '.[] | select(.draft == false)' ../releases.json | while read -r release; do
+            tag=$(echo "$release" | jq -r '.tag_name')
+            title=$(echo "$release" | jq -r '.name')
+            body=$(echo "$release" | jq -r '.body // ""')
+            prerelease=$(echo "$release" | jq -r '.prerelease')
 
-            # 如果 fork 中已经存在该 release，就跳过
+            echo "🔍 Checking tag: $tag"
+
             if gh release view "$tag" -R "$fork_repo" &>/dev/null; then
-              echo "✔ Release $tag already exists in fork."
+              echo "✔ Release $tag already exists in fork, skipping."
               continue
             fi
 
-            echo "⬇ Downloading release metadata for $tag"
-
-            # 获取 release 详情（包括 title、body、是否为 prerelease）
-            release_json=$(gh api repos/$upstream_repo/releases/tags/$tag)
-            title=$(echo "$release_json" | jq -r '.name')
-            body=$(echo "$release_json" | jq -r '.body')
-            prerelease=$(echo "$release_json" | jq -r '.prerelease')
-
-            # 下载所有 asset 文件
             download_dir="../releases_download/$tag"
             mkdir -p "$download_dir"
-            gh release download "$tag" -R $upstream_repo -D "$download_dir"
+            echo "⬇ Downloading assets for $tag..."
+            gh release download "$tag" -R "$upstream_repo" -D "$download_dir"
 
-            echo "📦 Creating release $tag in fork..."
-
-            # 判断是否为 prerelease
+            echo "🚀 Creating release $tag in fork..."
             if [ "$prerelease" = "true" ]; then
               gh release create "$tag" "$download_dir"/* \
                 -R "$fork_repo" \
@@ -78,7 +71,7 @@ jobs:
                 -n "$body"
             fi
 
-            echo "✅ Synced release $tag"
+            echo "✅ Synced release: $tag"
           done
         env:
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
