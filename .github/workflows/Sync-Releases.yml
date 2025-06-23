@@ -30,32 +30,39 @@ jobs:
           gh repo clone gedoor/legado legado-upstream
           mkdir -p releases_download
 
-      - name: Sync all upstream releases (excluding drafts)
+      - name: Fetch releases and sync missing ones
         run: |
-          cd legado-upstream
           upstream_repo="gedoor/legado"
           fork_repo="${{ github.repository }}"
 
-          echo "Fetching list of upstream releases..."
-          gh api -H "Accept: application/vnd.github+json" /repos/$upstream_repo/releases > ../releases.json
+          echo "Fetching upstream releases..."
+          gh api -H "Accept: application/vnd.github+json" /repos/$upstream_repo/releases > ../upstream_releases.json
+          echo "Fetching fork releases..."
+          gh api -H "Accept: application/vnd.github+json" /repos/$fork_repo/releases > ../fork_releases.json
 
-          jq -c '.[] | select(.draft == false)' ../releases.json | while read -r release; do
+          # 获取下游已有的release tags，转为空格分隔的字符串
+          existing_tags=$(jq -r '.[].tag_name' ../fork_releases.json | tr '\n' ' ')
+          echo "Downstream already has tags: $existing_tags"
+
+          # 遍历所有上游非draft的release
+          jq -c '.[] | select(.draft == false)' ../upstream_releases.json | while read -r release; do
             tag=$(echo "$release" | jq -r '.tag_name')
-            title=$(echo "$release" | jq -r '.name')
-            body=$(echo "$release" | jq -r '.body // ""')
-            prerelease=$(echo "$release" | jq -r '.prerelease')
 
-            echo "🔍 Checking tag: $tag"
-
-            if gh release view "$tag" -R "$fork_repo" &>/dev/null; then
+            # 如果下游已有该tag，则跳过
+            if echo "$existing_tags" | grep -qw "$tag"; then
               echo "✔ Release $tag already exists in fork, skipping."
               continue
             fi
 
+            title=$(echo "$release" | jq -r '.name')
+            body=$(echo "$release" | jq -r '.body // ""')
+            prerelease=$(echo "$release" | jq -r '.prerelease')
+
             download_dir="../releases_download/$tag"
             mkdir -p "$download_dir"
+
             echo "⬇ Downloading assets for $tag..."
-            gh release download "$tag" -R "$upstream_repo" -D "$download_dir"
+            gh release download "$tag" -R $upstream_repo -D "$download_dir"
 
             echo "🚀 Creating release $tag in fork..."
             if [ "$prerelease" = "true" ]; then
