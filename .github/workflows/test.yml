@@ -184,7 +184,7 @@ jobs:
             gh release delete beta -y
           fi
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.GH_TOKEN }}
       
       - name: Create or update beta tag
         uses: richardsimko/update-tag@v1
